@@ -1,0 +1,16 @@
+name: deadlockparser
+version: 0.0.1
+cabal-version: >=1.2
+build-type: Simple
+license: AllRightsReserved
+license-file: ""
+description:  
+data-dir: ""
+ 
+executable deadlockparser
+    build-depends: base -any, containers -any, directory -any,
+                   parsec -any
+    main-is: Main.hs
+    buildable: True
+    hs-source-dirs: src
+ 
