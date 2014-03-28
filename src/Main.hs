@@ -47,20 +47,29 @@ printDeadlocks deadlocks = do
 
 printDeadlock :: Deadlock -> IO ()
 printDeadlock d = do
-  let resources = M.keys d
-  printf "Deadlocks\n---------\n\nParticipants (resources): "
-  mapM_ printDeadlockResource resources
+  printf "Deadlock\n---------\n\nBlockers:\n"
+  let blockers = M.findWithDefault []  BLOCKER d
+  mapM_ printDeadlockItem blockers
+  printf "\nBlocked:\n"
+  let blocked = M.findWithDefault []  BLOCKED d
+  mapM_ printDeadlockItem blocked
   printf "\n"
-  printDeadlockInfo d
-  printf "\n"
 
-printDeadlockInfo :: Deadlock -> IO ()
-printDeadlockInfo = undefined
-
-
-printDeadlockResource :: ResourceId -> IO ()
-printDeadlockResource resource =
-  printf "%s-%s %s  " (id1 resource) (id2 resource) (restype resource)
+printDeadlockItem :: LockInfo -> IO ()
+printDeadlockItem item = do
+  case  (sessionId item) of
+    Just sessid -> case (user item) of
+      Just user -> case (machine item) of
+        Just machine-> case (currentSQL item) of
+          Just currentSQL -> case (resourceId item) of
+              Just resource -> printf
+                               "  Address: %s\n    Session id: %s\n    User: %s\n    Machine: %s\n    SQL: %s    [Resource was: %s-%s %s]\n"
+                               (addr item) sessid user machine currentSQL (id1 resource) (id2 resource) (restype resource)
+              Nothing -> printf "  Address: %s [Details unknown]\n" (addr item)
+          Nothing -> printf "  Address: %s [Details unknown]\n" (addr item)
+        Nothing -> printf "  Address: %s [Details unknown]\n" (addr item)
+      Nothing -> printf "  Address: %s [Details unknown]\n" (addr item)
+    Nothing -> printf "  Address: %s [Details unknown]\n" (addr item)
 
 
 parseWithEncoding :: TextEncoding -> Parser a -> FilePath -> IO (Either ParseError a)
@@ -73,21 +82,23 @@ parseWithEncoding encoding parser path = do
 
 buildDeadlockMap ::  WFG -> [LockInfo] -> Deadlock
 buildDeadlockMap wfgs enqs =
-  foldr (\wfgentry m ->
+  foldr (\wfgentry m -> do
+    let resourceForLock = resource wfgentry
+        lockInfoForItem = lookupLockInfo (lockaddr wfgentry) enqs
     M.insertWith
        bothRoles
-      (resource wfgentry)
-      ([LockInfoByRole (role wfgentry) (lookupLockInfo (lockaddr wfgentry) enqs)])
+      (role wfgentry)
+      ([lockInfoForItem { resourceId = Just resourceForLock }])
      m)
     M.empty
     wfgs
   where bothRoles new old = old ++ new
 
-lookupLockInfo :: String -> [LockInfo] -> Maybe LockInfo
+lookupLockInfo :: String -> [LockInfo] -> LockInfo
 lookupLockInfo lockAddr (l:ls)
-  | lockAddr == (addr l) = Just l
+  | lockAddr == (addr l) = l
   | otherwise = lookupLockInfo lockAddr ls
-lookupLockInfo addr _ = Nothing
+lookupLockInfo lockAddr _ = LockInfo lockAddr Nothing Nothing Nothing Nothing Nothing
 
 parseResources :: Parser [ResourceInfo]
 parseResources = do
@@ -132,7 +143,7 @@ parseEnqueue = do
   machine <- parseFQDN
   manyTill anyChar (try (string "current SQL:") >> many1 space)
   sql <- manyTill anyChar (try (string "DUMP LOCAL BLOCKER"))
-  let lockInfo = LockInfo addr sid user machine sql
+  let lockInfo = LockInfo addr (Just sid) (Just user) (Just machine) (Just sql) Nothing
   return $  lockInfo
   --trace ("parseEnqueue: " ++ show sql) return $ lockInfo
 
@@ -252,12 +263,7 @@ parseTillEOF = do
   --trace ("parseTillEOF: " ++ anyCs) return anyCs
   return anyCs
 
-type Deadlock =  M.Map ResourceId [LockInfoByRole]
-
-data LockInfoByRole = LockInfoByRole {
-  lockRole :: Role,
-  maybeLockInfo :: Maybe LockInfo
-}
+type Deadlock =  M.Map Role [LockInfo]
 
 data ResourceId = ResourceId {
   id1       :: String,
@@ -276,8 +282,10 @@ type WFG = [WFGEntry]
 
 data Role = BLOCKED | BLOCKER deriving (Eq, Ord, Show, Read)
 
+type LockAddr = String
+
 data QueueItem = QueueItem {
-  enqueueAddr   :: String,
+  enqueueAddr   :: LockAddr,
   grantLevel    :: String,
   requestLevel  :: Maybe String,
   resname       :: ResourceId
@@ -287,10 +295,11 @@ type Queue = [QueueItem]
 
 data LockInfo = LockInfo {
   addr        :: String,
-  sessionId   :: String,
-  user        :: String,
-  machine     :: String,
-  currentSQL  :: String
+  sessionId   :: Maybe String,
+  user        :: Maybe String,
+  machine     :: Maybe String,
+  currentSQL  :: Maybe String,
+  resourceId  :: Maybe ResourceId
   } deriving (Show, Read)
 
 data ResourceInfo = ResourceInfo {
