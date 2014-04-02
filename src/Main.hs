@@ -20,20 +20,17 @@ import Data.Time
 import Data.Time.Calendar
 
 main = do
-  --files <- getArgs
-  currDir <- getCurrentDirectory
+  -- withArgs ["TSUN1_lmd0_31213.trc", "TSUN2_lmd0_31031.trc", "TSUN3_lmd0_30978.trc", "TSUN4_lmd0_31868.trc" ] main
+  files     <- getArgs
+  currDir   <- getCurrentDirectory
   let encoding = latin1
-  --let filepaths = map ((currDir ++ "/") ++)  ["munip1_lmd0_5702.trc", "munip2_lmd0_5966.trc"]
-  --let filepaths = map ((currDir ++ "/") ++)  ["TSUN4_lmd0_31868.trc"]
-  --let filepaths = map ((currDir ++ "/") ++)  ["TSUN3_lmd0_30978.trc"]
-  let filepaths = map ((currDir ++ "/") ++)  ["TSUN2_lmd0_31031.trc"]
-  --let filepaths = map ((currDir ++ "/") ++)  ["TSUN1_lmd0_31213.trc"]
-  allres <- mapM (\p -> parseWithEncoding encoding parseResources p) filepaths
-  allenqs <- mapM (\p -> parseWithEncoding encoding parseEnqueues p) filepaths
-  allwfgs <- mapM (\p -> parseWithEncoding encoding parseWFGS p) filepaths
-  let resources = sequence allres
-  let enqueues = sequence allenqs
-  let wfgs = sequence allwfgs
+  let filepaths = map ((currDir ++ "/") ++) files
+  allres    <- mapM (\p -> parseWithEncoding encoding parseResources p) filepaths
+  allenqs   <- mapM (\p -> parseWithEncoding encoding parseEnqueues p) filepaths
+  allwfgs   <- mapM (\p -> parseWithEncoding encoding parseWFGS p) filepaths
+  resources <- liftM sequence (mapM (\p -> parseWithEncoding encoding parseResources p) filepaths)
+  enqueues  <- liftM sequence (mapM (\p -> parseWithEncoding encoding parseEnqueues p) filepaths)
+  wfgs      <- liftM sequence (mapM (\p -> parseWithEncoding encoding parseWFGS p) filepaths)
   deadlocks <- case wfgs of
     Left _ -> return Nothing
     Right ws -> case enqueues of
@@ -45,7 +42,7 @@ main = do
 
 printDeadlocks :: [Deadlock] -> IO ()
 printDeadlocks deadlocks = do
-  printf "---------\n* Deadlocks *\n-------\n\n"
+  printf "--------------------------------\n***         Deadlocks        ***\n--------------------------------\n\n"
   mapM_ printDeadlock deadlocks
 
 
@@ -54,7 +51,7 @@ printDeadlock d = do
   printf "Deadlock at: %s\n--------------------------------\nBlockers:\n" (show $ datetime d)
   let blockers = M.findWithDefault []  BLOCKER (locksMap d)
   mapM_ printDeadlockItem blockers
-  printf "\nBlocked:\n"
+  printf "Blocked:\n"
   let blocked = M.findWithDefault []  BLOCKED (locksMap d)
   mapM_ printDeadlockItem blocked
   printf "\n\n"
@@ -68,7 +65,7 @@ printDeadlockItem item = do
       Just user -> case (machine item) of
         Just machine-> case (currentSQL item) of
           Just currentSQL -> printf
-                               "  Address: %s\n    [Resource: %s-%s %s]    Session id: %s\n    User: %s\n    Machine: %s\n    SQL: %s\n"
+                               "  Address: %s    [Resource: %s-%s %s]\n    Session id: %s\n    User: %s\n    Machine: %s\n    SQL: %s\n"
                                lockaddr (id1 resource) (id2 resource) (restype resource) sessid user machine currentSQL
           Nothing -> printf "  Address: %s    [Resource: %s-%s %s] [Details unknown]\n" lockaddr (id1 resource) (id2 resource) (restype resource)
         Nothing -> printf "  Address: %s    [Resource: %s-%s %s] [Details unknown]\n" lockaddr (id1 resource) (id2 resource) (restype resource)
