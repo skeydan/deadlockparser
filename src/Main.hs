@@ -14,6 +14,10 @@ import Data.Char
 import Control.Monad
 import qualified Data.Map as M
 import Text.Printf
+import Data.Time.Format
+import System.Locale
+import Data.Time
+import Data.Time.Calendar
 
 main = do
   --files <- getArgs
@@ -41,35 +45,35 @@ main = do
 
 printDeadlocks :: [Deadlock] -> IO ()
 printDeadlocks deadlocks = do
-  printf "\nDeadlocks\n---------\n\n"
+  printf "---------\n* Deadlocks *\n-------\n\n"
   mapM_ printDeadlock deadlocks
 
 
 printDeadlock :: Deadlock -> IO ()
 printDeadlock d = do
-  printf "Deadlock\n---------\n\nBlockers:\n"
-  let blockers = M.findWithDefault []  BLOCKER d
+  printf "Deadlock at: %s\n--------------------------------\nBlockers:\n" (show $ datetime d)
+  let blockers = M.findWithDefault []  BLOCKER (locksMap d)
   mapM_ printDeadlockItem blockers
   printf "\nBlocked:\n"
-  let blocked = M.findWithDefault []  BLOCKED d
+  let blocked = M.findWithDefault []  BLOCKED (locksMap d)
   mapM_ printDeadlockItem blocked
-  printf "\n"
+  printf "\n\n"
 
 printDeadlockItem :: LockInfo -> IO ()
 printDeadlockItem item = do
+  let lockaddr = addr item
+  let resource = resourceId item
   case  (sessionId item) of
     Just sessid -> case (user item) of
       Just user -> case (machine item) of
         Just machine-> case (currentSQL item) of
-          Just currentSQL -> case (resourceId item) of
-              Just resource -> printf
-                               "  Address: %s\n    Session id: %s\n    User: %s\n    Machine: %s\n    SQL: %s    [Resource was: %s-%s %s]\n"
-                               (addr item) sessid user machine currentSQL (id1 resource) (id2 resource) (restype resource)
-              Nothing -> printf "  Address: %s [Details unknown]\n" (addr item)
-          Nothing -> printf "  Address: %s [Details unknown]\n" (addr item)
-        Nothing -> printf "  Address: %s [Details unknown]\n" (addr item)
-      Nothing -> printf "  Address: %s [Details unknown]\n" (addr item)
-    Nothing -> printf "  Address: %s [Details unknown]\n" (addr item)
+          Just currentSQL -> printf
+                               "  Address: %s\n    [Resource: %s-%s %s]    Session id: %s\n    User: %s\n    Machine: %s\n    SQL: %s\n"
+                               lockaddr (id1 resource) (id2 resource) (restype resource) sessid user machine currentSQL
+          Nothing -> printf "  Address: %s    [Resource: %s-%s %s] [Details unknown]\n" lockaddr (id1 resource) (id2 resource) (restype resource)
+        Nothing -> printf "  Address: %s    [Resource: %s-%s %s] [Details unknown]\n" lockaddr (id1 resource) (id2 resource) (restype resource)
+      Nothing -> printf "  Address: %s    [Resource: %s-%s %s][Details unknown]\n" lockaddr (id1 resource) (id2 resource) (restype resource)
+    Nothing -> printf "  Address: %s    [Resource: %s-%s %s] [Details unknown]\n" lockaddr (id1 resource) (id2 resource) (restype resource)
 
 
 parseWithEncoding :: TextEncoding -> Parser a -> FilePath -> IO (Either ParseError a)
@@ -81,24 +85,26 @@ parseWithEncoding encoding parser path = do
 
 
 buildDeadlockMap ::  WFG -> [LockInfo] -> Deadlock
-buildDeadlockMap wfgs enqs =
-  foldr (\wfgentry m -> do
-    let resourceForLock = resource wfgentry
-        lockInfoForItem = lookupLockInfo (lockaddr wfgentry) enqs
-    M.insertWith
-       bothRoles
-      (role wfgentry)
-      ([lockInfoForItem { resourceId = Just resourceForLock }])
-     m)
-    M.empty
-    wfgs
-  where bothRoles new old = old ++ new
+buildDeadlockMap (datetime, wfgentries) enqs =
+  Deadlock
+    datetime
+    (foldr (\wfgentry m -> do
+      let resourceForLock = resource wfgentry
+          lockInfoForItem = lookupLockInfo (lockaddr wfgentry) enqs
+      M.insertWith
+         (++)
+        (role wfgentry)
+        ([lockInfoForItem { resourceId = resourceForLock }])
+       m)
+      M.empty
+      wfgentries)
+  --where bothRoles new old = old ++ new
 
 lookupLockInfo :: String -> [LockInfo] -> LockInfo
 lookupLockInfo lockAddr (l:ls)
   | lockAddr == (addr l) = l
   | otherwise = lookupLockInfo lockAddr ls
-lookupLockInfo lockAddr _ = LockInfo lockAddr Nothing Nothing Nothing Nothing Nothing
+lookupLockInfo lockAddr _ = LockInfo lockAddr Nothing Nothing Nothing Nothing (ResourceId "0x0" "0x0" "XX")
 
 parseResources :: Parser [ResourceInfo]
 parseResources = do
@@ -143,7 +149,7 @@ parseEnqueue = do
   machine <- parseFQDN
   manyTill anyChar (try (string "current SQL:") >> many1 space)
   sql <- manyTill anyChar (try (string "DUMP LOCAL BLOCKER"))
-  let lockInfo = LockInfo addr (Just sid) (Just user) (Just machine) (Just sql) Nothing
+  let lockInfo = LockInfo addr (Just sid) (Just user) (Just machine) (Just sql) (ResourceId "0x0" "0x0" "XX")
   return $  lockInfo
   --trace ("parseEnqueue: " ++ show sql) return $ lockInfo
 
@@ -159,7 +165,18 @@ parseWFGS = do
   return wfgs
 
 parseWFG :: Parser WFG
-parseWFG = many1 parseWFGEntry
+parseWFG = do
+  wfgs <- many1 parseWFGEntry
+  skipMany1 (newline >> string "*** ")
+  datetime <- parseDateTime
+  return (datetime, wfgs)
+
+parseDateTime :: Parser LocalTime
+parseDateTime = do
+  datestring <- many1 (digit <|> oneOf ":- ")
+  case (parseTime defaultTimeLocale "%F %T" datestring :: Maybe LocalTime) of
+    Just datetime -> return datetime
+    Nothing -> return $ LocalTime (ModifiedJulianDay 1) (TimeOfDay 0 0 0)
 
 skipTillWFG :: Parser [Char]
 skipTillWFG = do
@@ -254,7 +271,7 @@ parseOracleIdentifier :: Parser [Char]
 parseOracleIdentifier = many1 (alphaNum <|> oneOf"$#_")
 
 parseFQDN :: Parser [Char]
-parseFQDN = many1 (alphaNum <|> oneOf ".")
+parseFQDN = many1 (alphaNum <|> oneOf ".-")
 
 parseTillEOF :: Parser [Char]
 parseTillEOF = do
@@ -263,7 +280,10 @@ parseTillEOF = do
   --trace ("parseTillEOF: " ++ anyCs) return anyCs
   return anyCs
 
-type Deadlock =  M.Map Role [LockInfo]
+data Deadlock =  Deadlock {
+  datetime  :: LocalTime,
+  locksMap     :: M.Map Role [LockInfo]
+}
 
 data ResourceId = ResourceId {
   id1       :: String,
@@ -278,7 +298,7 @@ data WFGEntry = WFGEntry {
   instid    :: Int
 } deriving (Show, Read)
 
-type WFG = [WFGEntry]
+type WFG = (LocalTime, [WFGEntry])
 
 data Role = BLOCKED | BLOCKER deriving (Eq, Ord, Show, Read)
 
@@ -299,7 +319,7 @@ data LockInfo = LockInfo {
   user        :: Maybe String,
   machine     :: Maybe String,
   currentSQL  :: Maybe String,
-  resourceId  :: Maybe ResourceId
+  resourceId  :: ResourceId
   } deriving (Show, Read)
 
 data ResourceInfo = ResourceInfo {
