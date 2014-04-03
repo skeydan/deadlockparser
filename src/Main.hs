@@ -13,6 +13,7 @@ import Data.Maybe
 import Data.Char
 import Control.Monad
 import qualified Data.Map as M
+import Data.List
 import Text.Printf
 import Data.Time.Format
 import System.Locale
@@ -23,28 +24,25 @@ main = do
   -- withArgs ["TSUN1_lmd0_31213.trc", "TSUN2_lmd0_31031.trc", "TSUN3_lmd0_30978.trc", "TSUN4_lmd0_31868.trc" ] main
   files     <- getArgs
   currDir   <- getCurrentDirectory
-  let encoding = latin1
+  let encoding  = latin1
   let filepaths = map ((currDir ++ "/") ++) files
-  allres    <- mapM (\p -> parseWithEncoding encoding parseResources p) filepaths
-  allenqs   <- mapM (\p -> parseWithEncoding encoding parseEnqueues p) filepaths
-  allwfgs   <- mapM (\p -> parseWithEncoding encoding parseWFGS p) filepaths
   resources <- liftM sequence (mapM (\p -> parseWithEncoding encoding parseResources p) filepaths)
   enqueues  <- liftM sequence (mapM (\p -> parseWithEncoding encoding parseEnqueues p) filepaths)
   wfgs      <- liftM sequence (mapM (\p -> parseWithEncoding encoding parseWFGS p) filepaths)
   deadlocks <- case wfgs of
-    Left _ -> return Nothing
+    Left _   -> return Nothing
     Right ws -> case enqueues of
-      Left _ -> return Nothing
+      Left _     -> return Nothing
       Right enqs -> return (Just (map (\w -> buildDeadlockMap w (join enqs)) (join ws)))
   case deadlocks of
-    Nothing -> print "Files could not be parsed"
-    Just dls -> printDeadlocks dls
+    Nothing  -> print "Files could not be parsed"
+    Just dls -> printDeadlocks $ sort dls
+
 
 printDeadlocks :: [Deadlock] -> IO ()
 printDeadlocks deadlocks = do
   printf "--------------------------------\n***         Deadlocks        ***\n--------------------------------\n\n"
   mapM_ printDeadlock deadlocks
-
 
 printDeadlock :: Deadlock -> IO ()
 printDeadlock d = do
@@ -95,7 +93,6 @@ buildDeadlockMap (datetime, wfgentries) enqs =
        m)
       M.empty
       wfgentries)
-  --where bothRoles new old = old ++ new
 
 lookupLockInfo :: String -> [LockInfo] -> LockInfo
 lookupLockInfo lockAddr (l:ls)
@@ -145,7 +142,8 @@ parseEnqueue = do
   manyTill anyChar (try (string "machine:") >> many1 space)
   machine <- parseFQDN
   manyTill anyChar (try (string "current SQL:") >> many1 space)
-  sql <- manyTill anyChar (try (string "DUMP LOCAL BLOCKER"))
+  --sql <- manyTill anyChar (try (string "DUMP LOCAL BLOCKER"))
+  sql <- manyTill anyChar (try (newline >> newline))
   let lockInfo = LockInfo addr (Just sid) (Just user) (Just machine) (Just sql) (ResourceId "0x0" "0x0" "XX")
   return $  lockInfo
   --trace ("parseEnqueue: " ++ show sql) return $ lockInfo
@@ -216,15 +214,7 @@ parseResAddr = do
   resaddr <- many1 hexDigit
   many1 (char '-') >> newline
   return resaddr
-{-
-parseLockAddr :: Parser [Char]
-parseLockAddr = do
-  many1 (char '-') >> string "enqueue 0x"
-  lockaddr <- many1 hexDigit
-  many1 (char '-') >> newline
-  --trace ("parseLockAddr: " ++ show lockaddr) return lockaddr
-  return lockaddr
--}
+
 parseGrantedQueue :: Parser [QueueItem]
 parseGrantedQueue = many parseGrantedQueueItem
 
@@ -280,7 +270,7 @@ parseTillEOF = do
 data Deadlock =  Deadlock {
   datetime  :: LocalTime,
   locksMap     :: M.Map Role [LockInfo]
-}
+} deriving (Eq, Ord)
 
 data ResourceId = ResourceId {
   id1       :: String,
@@ -317,7 +307,7 @@ data LockInfo = LockInfo {
   machine     :: Maybe String,
   currentSQL  :: Maybe String,
   resourceId  :: ResourceId
-  } deriving (Show, Read)
+  } deriving (Eq, Ord, Show, Read)
 
 data ResourceInfo = ResourceInfo {
   resAddr     :: String,
