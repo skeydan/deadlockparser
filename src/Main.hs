@@ -21,12 +21,19 @@ import System.Exit
 import Data.Time
 import Data.Time.Calendar
 
-main = do
-  -- withArgs ["TSUN1_lmd0_31213.trc", "TSUN2_lmd0_31031.trc", "TSUN3_lmd0_30978.trc", "TSUN4_lmd0_31868.trc" ] main
-  files     <- getArgs
-  when (null files) (printf "\nusage: ./deadlockparser [file ..]\n\n" >> exitSuccess)
+main = getArgs >>= handleArgs >>= showDeadlocks
+
+handleArgs :: [String] -> IO (TextEncoding, [String])
+handleArgs ["-h"] = usage >> exitSuccess
+handleArgs []     = usage >> exitSuccess
+handleArgs ("-e" : enc : files) =  do
+    encoding <- mkTextEncoding enc
+    return (encoding, files)
+handleArgs files  = return (localeEncoding, files)
+
+showDeadlocks :: (TextEncoding, [String]) -> IO ()
+showDeadlocks (encoding, files) = do
   currDir   <- getCurrentDirectory
-  let encoding  = latin1
   let filepaths = map ((currDir ++ "/") ++) files
   -- not currently used, so save time
   -- resources <- liftM sequence (mapM (\p -> parseWithEncoding encoding parseResources p) filepaths)
@@ -41,12 +48,15 @@ main = do
     Nothing  -> print "Files could not be parsed"
     Just dls -> printDeadlocks $ sort dls
 
+usage :: IO a
+usage = (printf "\nusage: ./deadlockparser [-e encoding] file1 file2 ... file<n>\n\n" >> exitSuccess)
+
 printDeadlocks :: [Deadlock] -> IO ()
 printDeadlocks deadlocks = do
   printf "\n------------------------------------------\n***              Deadlocks             ***\n------------------------------------------"
   printf "\nFirst in tracefiles:   %s" (show $ datetime (minimum deadlocks))
   printf "\nLast in tracefiles:    %s" (show $ datetime (maximum deadlocks))
-  printf "\nDeadlocks encountered: %d\n" (length deadlocks)
+  printf "\nDeadlocks encountered: %d\n------------------------------------------\n\n" (length deadlocks)
   mapM_ printDeadlock deadlocks
 
 printDeadlock :: Deadlock -> IO ()
