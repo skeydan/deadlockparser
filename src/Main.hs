@@ -1,7 +1,5 @@
 
-module Main (
-    main
-) where
+module Main where
 
 import System.Environment
 import System.Directory
@@ -40,23 +38,27 @@ showDeadlocks (encoding, files) = do
   enqueues  <- liftM sequence (mapM (\p -> parseWithEncoding encoding parseEnqueues p) filepaths)
   wfgs      <- liftM sequence (mapM (\p -> parseWithEncoding encoding parseWFGS p) filepaths)
   deadlocks <- case wfgs of
-    Left _   -> return Nothing
+    Left e   -> fail ("Could not parse wait-for-graphs:" ++ show e)
     Right ws -> case enqueues of
-      Left _     -> return Nothing
+      Left e     -> fail ("Could not enqueues:" ++ show e)
       Right enqs -> return (Just (map (\w -> buildDeadlockMap w (join enqs)) (join ws)))
   case deadlocks of
-    Nothing  -> print "Files could not be parsed"
+    Nothing  -> fail "Error building up deadlock map"
     Just dls -> printDeadlocks $ sort dls
 
 usage :: IO a
-usage = (printf "\nusage: ./deadlockparser [-e encoding] file1 file2 ... file<n>\n\n" >> exitSuccess)
+usage = (printf "\nusage: ./deadlockparser [-e encoding] file1 file2 ... file<n>\n\n"
+        >> exitSuccess)
 
 printDeadlocks :: [Deadlock] -> IO ()
 printDeadlocks deadlocks = do
-  printf "\n------------------------------------------\n***              Deadlocks             ***\n------------------------------------------"
+  printf "\n------------------------------------------\n"
+  printf "***              Deadlocks             ***\n"
+  printf "------------------------------------------"
   printf "\nFirst in tracefiles:   %s" (show $ datetime (minimum deadlocks))
   printf "\nLast in tracefiles:    %s" (show $ datetime (maximum deadlocks))
-  printf "\nDeadlocks encountered: %d\n------------------------------------------\n\n" (length deadlocks)
+  printf "\nDeadlocks encountered: %d\n------------------------------------------\n\n"
+         (length deadlocks)
   mapM_ printDeadlock deadlocks
 
 printDeadlock :: Deadlock -> IO ()
@@ -71,10 +73,11 @@ printDeadlock d = do
 
 printDeadlockItem :: LockInfo -> IO ()
 printDeadlockItem item =
-  printf "  Address: %s    [Resource: %s-%s %s]\n    Session id: %s\n    User: %s\n    Machine: %s\n    SQL: %s\n"
+  printf "  Address: %s    [Resource: %s-%s %s]\n  Session id: %s\n  User: %s\n\
+            \  Machine: %s\n  SQL: %s\n"
   (addr item) (id1 (resourceId item)) (id2 (resourceId item)) (restype (resourceId item))
   (fromMaybe "[unknown]" (sessionId item)) (fromMaybe "[unknown]" (user item))
-  (fromMaybe "[unknown]" (machine item)) (fromMaybe "[unknown]" (currentSQL item))
+  (fromMaybe "[unknown]" (machine item)) (fromMaybe "[unknown]\n" (currentSQL item))
 
 buildDeadlockMap ::  WFG -> [LockInfo] -> Deadlock
 buildDeadlockMap (datetime, wfgentries) enqs =
@@ -95,7 +98,8 @@ lookupLockInfo :: String -> [LockInfo] -> LockInfo
 lookupLockInfo lockAddr (l:ls)
   | lockAddr == (addr l) = l
   | otherwise = lookupLockInfo lockAddr ls
-lookupLockInfo lockAddr _ = LockInfo lockAddr Nothing Nothing Nothing Nothing (ResourceId "0x0" "0x0" "XX")
+lookupLockInfo lockAddr _ = LockInfo lockAddr Nothing Nothing Nothing Nothing
+                            (ResourceId "0x0" "0x0" "XX")
 
 
 {- parsing section -}
@@ -124,12 +128,15 @@ parseResource = do
   let resInfo  = ResourceInfo addr (read instid) resourceId grantedQueue convertQueue
   return resInfo
   --trace ("parseResource: " ++ show resInfo) return resInfo
+   <?> "resource information [parseResource]"
 
 skipTillResource :: Parser [Char]
 skipTillResource = manyTill anyChar (try (lookAhead parseResAddr))
+                   <?> "anything preceding a resource address [skipTillResource]"
 
 parseEnqueues :: Parser [LockInfo]
 parseEnqueues = many1 (try (skipTillEnqueue >> parseEnqueue))
+                <?> "locks information [parseEnqueues]"
 
 parseEnqueue :: Parser LockInfo
 parseEnqueue = do
@@ -143,15 +150,19 @@ parseEnqueue = do
   machine <- parseFQDN
   manyTill anyChar (try (string "current SQL:") >> many1 space)
   sql     <- manyTill anyChar (try (string "DUMP LOCAL BLOCKER"))
-  let lockInfo = LockInfo addr (Just sid) (Just user) (Just machine) (Just sql) (ResourceId "0x0" "0x0" "XX")
+  let lockInfo = LockInfo addr (Just sid) (Just user) (Just machine) (Just sql)
+                (ResourceId "0x0" "0x0" "XX")
   return $  lockInfo
   --trace ("parseEnqueue: " ++ show lockInfo) return $ lockInfo
+  <?> "lock information [parseEnqueue]"
 
 skipTillEnqueue :: Parser [Char]
 skipTillEnqueue = manyTill anyChar (try (string ("user session for deadlock lock 0x")))
+                  <?> "anything preceding: user session for deadlock lock 0x [skipTillResource]"
 
 parseWFGS :: Parser [WFG]
-parseWFGS = many1 (try (skipTillWFG >> parseWFG))
+parseWFGS = many (try (skipTillWFG >> parseWFG))
+            <?> "wait-for-graphs [parseWFGS]"
 
 parseWFG :: Parser WFG
 parseWFG = do
@@ -159,10 +170,11 @@ parseWFG = do
   skipMany1 (newline >> string "*** ")
   datetime <- parseDateTime
   return (datetime, wfgs)
-
+  <?> "wait-for-graph [parseWFG]"
 
 skipTillWFG :: Parser [Char]
 skipTillWFG = manyTill anyChar (try parseWFGMarker)
+              <?> "anything preceding: Global Wait-For-Graph(WFG) at ddTS[ [skipTillWFG]"
 
 parseWFGMarker :: Parser [Char]
 parseWFGMarker = do
@@ -171,6 +183,7 @@ parseWFGMarker = do
   string "] :\n"
   --trace ("parseWFGMarker: " ++ wfgLoc) return wfgLoc
   return wfgLoc
+  <?> "sth like Global Wait-For-Graph(WFG) at ddTS[0.4496] :\\n [parseWFGMarker]"
 
 parseWFGEntry :: Parser WFGEntry
 parseWFGEntry = do
@@ -191,7 +204,9 @@ parseWFGEntry = do
                           (ResourceId id1 id2 restype)
                           (read instid)
   --trace ("parseWFGEntry: " ++ show wfgEntry) return $ wfgEntry
-  return $ wfgEntry
+  return wfgEntry
+   <?> "sth like BLOCKER 0x75e76e408 5 wq 2 cvtops x1 TX 0x7f0001.0x5fac(ext 0x39,0x0)\
+                 \ [C7000-0001-00000007] inst 1 [parseWFGEntry]"
 
 parseDateTime :: Parser LocalTime
 parseDateTime = do
@@ -199,6 +214,7 @@ parseDateTime = do
   case (parseTime defaultTimeLocale "%F %T" datestring :: Maybe LocalTime) of
     Just datetime -> return datetime
     Nothing -> return $ LocalTime (ModifiedJulianDay 1) (TimeOfDay 0 0 0)
+    <?> "sth like 2014-03-10 12:16:22.513 [parseDateTime]"
 
 parseResAddr :: Parser [Char]
 parseResAddr = do
@@ -206,6 +222,7 @@ parseResAddr = do
   resaddr <- many1 hexDigit
   many1 (char '-') >> newline
   return resaddr
+  <?> "sth like resource 0x75df152d8----------------------\\n [parseResAddr]"
 
 parseGrantedQueue :: Parser [QueueItem]
 parseGrantedQueue = many parseGrantedQueueItem
@@ -222,6 +239,8 @@ parseGrantedQueueItem = do
   manyTill anyChar (lookAhead (char '['))
   resname     <- parseResName
   return (QueueItem enqueueAddr grantLevel Nothing resname)
+  <?> "sth like lp 0x75e4fdcf8 gl KJUSERCW rp 0x749dc8a40 [0x661c1][0x0],[TM]\
+       \ [parseGrantedQueueItem]"
 
 parseConvertQueueItem :: Parser QueueItem
 parseConvertQueueItem = do
@@ -234,6 +253,9 @@ parseConvertQueueItem = do
   manyTill anyChar (lookAhead (char '['))
   resname      <- parseResName
   return (QueueItem enqueueAddr grantLevel (Just requestLevel) resname)
+  <?> "sth like lp 0x75e4f9230 gl KJUSERNL rl KJUSEREX rp 0x749faff18 [0x440008][0x279f0],[TX]\
+      \ [parseConvertQueueItem]"
+
 
 parseResName :: Parser ResourceId
 parseResName = do
@@ -245,13 +267,15 @@ parseResName = do
   restype   <- manyTill upper (char ']')
   return (ResourceId id1 id2 restype)
   --trace (show (ResourceId id1 id2 restype)) return (ResourceId id1 id2 restype)
+  <?> "sth like [0x440008][0x279f0],[TX] [parseResName]"
 
 parseOracleIdentifier :: Parser [Char]
 parseOracleIdentifier = many1 (alphaNum <|> oneOf"$#_")
+                        <?> "sth like theuser$ [parseOracleIdentifier]"
 
 parseFQDN :: Parser [Char]
 parseFQDN = many1 (alphaNum <|> oneOf ".-")
-
+            <?> "sth like host.my-domain.com [N]"
 
 {- types section -}
 
