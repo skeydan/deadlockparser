@@ -40,7 +40,7 @@ showDeadlocks (encoding, files) = do
   deadlocks <- case wfgs of
     Left e   -> fail ("Could not parse wait-for-graphs:" ++ show e)
     Right ws -> case enqueues of
-      Left e     -> fail ("Could not enqueues:" ++ show e)
+      Left e     -> fail ("Could not parse enqueues:" ++ show e)
       Right enqs -> return (Just (map (\w -> buildDeadlockMap w (join enqs)) (join ws)))
   case deadlocks of
     Nothing  -> fail "Error building up deadlock map"
@@ -84,23 +84,20 @@ buildDeadlockMap (datetime, wfgentries) enqs =
   Deadlock
     datetime
     (foldr (\wfgentry m -> do
-      let resourceForLock = resource wfgentry
-          lockInfoForItem = lookupLockInfo (lockaddr wfgentry) enqs
+      let lockInfoForItem = lookupLockInfo (lockaddr wfgentry) (resource wfgentry) enqs
       M.insertWith
          (++)
         (role wfgentry)
-        ([lockInfoForItem { resourceId = resourceForLock }])
+        ([lockInfoForItem])
        m)
       M.empty
       wfgentries)
 
-lookupLockInfo :: String -> [LockInfo] -> LockInfo
-lookupLockInfo lockAddr (l:ls)
-  | lockAddr == (addr l) = l
-  | otherwise = lookupLockInfo lockAddr ls
-lookupLockInfo lockAddr _ = LockInfo lockAddr Nothing Nothing Nothing Nothing
-                            (ResourceId "0x0" "0x0" "XX")
-
+lookupLockInfo :: String -> ResourceId -> [LockInfo] -> LockInfo
+lookupLockInfo lockAddr resAddr (l:ls)
+  | lockAddr == (addr l) &&  resAddr == (resourceId l) = l
+  | otherwise = lookupLockInfo lockAddr resAddr ls
+lookupLockInfo lockAddr resAddr _ = LockInfo lockAddr Nothing Nothing Nothing Nothing resAddr
 
 {- parsing section -}
 
@@ -136,32 +133,39 @@ skipTillResource = manyTill anyChar (try (lookAhead parseResAddr))
 
 parseEnqueues :: Parser [LockInfo]
 parseEnqueues = many1 (try (skipTillEnqueue >> parseEnqueue))
-                <?> "locks information [parseEnqueues]"
+                <?> "lock information [parseEnqueues]"
 
 parseEnqueue :: Parser LockInfo
 parseEnqueue = do
-  addr    <- many1 hexDigit
+  addr     <- many1 hexDigit
   many1 space
   string "sid:" >> many space
-  sid     <- many1 digit
-  manyTill anyChar (try (string "O/S info: user:") >> many space)
-  user    <- parseOracleIdentifier
+  sid      <- many1 digit
+  many1 space >> string "ser:" >> many space
+  ser      <- many1 digit
+  manyTill anyChar (try (string "user:") >> many space)
+  userId   <- many1 digit
+  char '/'
+  userName <- parseOracleIdentifier
   manyTill anyChar (try (string "machine:") >> many1 space)
-  machine <- parseFQDN
+  machine  <- parseFQDN
   manyTill anyChar (try (string "current SQL:") >> many1 space)
-  sql     <- manyTill anyChar (try (string "DUMP LOCAL BLOCKER"))
-  let lockInfo = LockInfo addr (Just sid) (Just user) (Just machine) (Just sql)
-                (ResourceId "0x0" "0x0" "XX")
+  sql      <- manyTill anyChar (try (string "DUMP LOCAL BLOCKER"))
+  manyTill anyChar (try ((string "possible owner[") >> many1 digit >> char '.'
+                          >> many1 digit >> string "] on resource "))
+  resId    <- parseResNameEnqFmt
+  let lockInfo = LockInfo addr (Just sid) (Just userName) (Just machine) (Just sql) resId
   return $  lockInfo
   --trace ("parseEnqueue: " ++ show lockInfo) return $ lockInfo
   <?> "lock information [parseEnqueue]"
+
 
 skipTillEnqueue :: Parser [Char]
 skipTillEnqueue = manyTill anyChar (try (string ("user session for deadlock lock 0x")))
                   <?> "anything preceding: user session for deadlock lock 0x [skipTillResource]"
 
 parseWFGS :: Parser [WFG]
-parseWFGS = many (try (skipTillWFG >> parseWFG))
+parseWFGS = many1 (try (skipTillWFG >> parseWFG))
             <?> "wait-for-graphs [parseWFGS]"
 
 parseWFG :: Parser WFG
@@ -193,15 +197,13 @@ parseWFGEntry = do
   skipMany1 (space >> (many1 digit) >> space >> string "wq" >> space >>
             (many1 digit) >> space >> string "cvtops" >> space >>
             char 'x' >> (many1 digit) >> space)
-  restype   <- manyTill upper space
-  skipMany1 (string "0x")
-  id1       <- liftM ("0x" ++) $ manyTill hexDigit (string ".0x")
-  id2       <- liftM ("0x" ++) $ manyTill hexDigit (string "(ext ")
+  resId     <- parseResNameWFGFmt
+  string "(ext "
   manyTill (hexDigit <|> oneOf ")[]x,-") (string " inst ")
   instid    <- manyTill digit (space >> newline)
   let wfgEntry = WFGEntry (read role :: Role)
                           lockaddr
-                          (ResourceId id1 id2 restype)
+                          resId
                           (read instid)
   --trace ("parseWFGEntry: " ++ show wfgEntry) return $ wfgEntry
   return wfgEntry
@@ -267,7 +269,29 @@ parseResName = do
   restype   <- manyTill upper (char ']')
   return (ResourceId id1 id2 restype)
   --trace (show (ResourceId id1 id2 restype)) return (ResourceId id1 id2 restype)
-  <?> "sth like [0x440008][0x279f0],[TX] [parseResName]"
+  <?> "sth like [0x7f0001][0x5fac],[TX] [parseResName]"
+
+parseResNameEnqFmt :: Parser ResourceId
+parseResNameEnqFmt = do
+  restype   <- manyTill upper (char '-')
+  id1 <- liftM (("0x" ++) . (map toLower) . dropWhile (== '0')) $ many1 hexDigit
+  char '-'
+  --id2_ <- many1 hexDigit
+  --let id2 = ("0x" ++) . map toLower . (\x -> dropWhile (== '0') (init x) ++ [last x]) $ id2_
+  id2 <- liftM (("0x" ++) . map toLower . (\x -> dropWhile (== '0') (init x) ++ [last x])) $ many1 hexDigit
+  return (ResourceId id1 id2 restype)
+  --trace (show (ResourceId id1 id2 restype)) return (ResourceId id1 id2 restype)
+  <?> "sth like TX-007F0001-00005FAC [parseResNameEnqFmt]"
+
+parseResNameWFGFmt :: Parser ResourceId
+parseResNameWFGFmt = do
+  restype   <- manyTill upper space
+  skipMany1 (string "0x")
+  id1       <- liftM ("0x" ++) $ manyTill hexDigit (string ".0x")
+  id2       <- liftM ("0x" ++) $ many1 hexDigit
+  return (ResourceId id1 id2 restype)
+  --trace (show (ResourceId id1 id2 restype)) return (ResourceId id1 id2 restype)
+  <?> "sth like TX 0x7f0001.0x5fac [parseResNameWFGFmt]"
 
 parseOracleIdentifier :: Parser [Char]
 parseOracleIdentifier = many1 (alphaNum <|> oneOf"$#_")
