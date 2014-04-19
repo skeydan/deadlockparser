@@ -74,7 +74,7 @@ printDeadlock d = do
 printDeadlockItem :: LockInfo -> IO ()
 printDeadlockItem item =
   printf "  Address: %s    [Resource: %s-%s %s]\n  Session id: %s\n  User: %s\n\
-            \  Machine: %s\n  SQL: %s\n"
+            \  Machine: %s\n  Current SQL: %s\n"
   (addr item) (id1 (resourceId item)) (id2 (resourceId item)) (restype (resourceId item))
   (fromMaybe "[unknown]" (sessionId item)) (fromMaybe "[unknown]" (user item))
   (fromMaybe "[unknown]" (machine item)) (fromMaybe "[unknown]\n" (currentSQL item))
@@ -165,7 +165,7 @@ skipTillEnqueue = manyTill anyChar (try (string ("user session for deadlock lock
                   <?> "anything preceding: user session for deadlock lock 0x [skipTillResource]"
 
 parseWFGS :: Parser [WFG]
-parseWFGS = many1 (try (skipTillWFG >> parseWFG))
+parseWFGS = many (try (skipTillWFG >> parseWFG))
             <?> "wait-for-graphs [parseWFGS]"
 
 parseWFG :: Parser WFG
